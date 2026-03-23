@@ -131,6 +131,9 @@
             background-color: rgba(10, 10, 20, 0.3);
             transition: filter 0.2s ease, transform 0.1s ease;
             touch-action: none; /* 禁止移动端触摸默认行为（缩放、滚动） */
+            -webkit-touch-callout: none; /* 禁止iOS长按菜单 */
+            -webkit-user-select: none; /* 禁止iOS选择文本 */
+            user-select: none;
         }
 
         /* 游戏失败弹窗 - 阴沉风格（移动端适配：百分比宽度+响应式内边距） */
@@ -216,6 +219,7 @@
             transition: all 0.3s;
             box-shadow: 0 4px 15px rgba(153, 34, 34, 0.5);
             touch-action: manipulation; /* 按钮触摸优化，防止双击缩放 */
+            -webkit-tap-highlight-color: transparent; /* 移除iOS点击高亮 */
         }
 
         .game-over button:hover, .game-start button:hover {
@@ -339,15 +343,23 @@
         /* 移动端控制小球（阴沉风格，默认隐藏，游戏运行时显示） */
         .control-ball {
             position: fixed;
-            width: 30px;
-            height: 30px;
+            width: 40px; /* 平板端增大控制小球，更容易触摸 */
+            height: 40px;
             border-radius: 50%;
             background: linear-gradient(135deg, #992222, #661111);
-            box-shadow: 0 0 15px rgba(204, 68, 68, 0.8);
+            box-shadow: 0 0 20px rgba(204, 68, 68, 0.9), inset 0 0 10px rgba(255,255,255,0.2);
             pointer-events: none; /* 不阻挡触摸事件 */
             z-index: 90; /* 低于其他UI，高于画布 */
             display: none; /* 初始隐藏 */
             touch-action: none;
+            /* 增加视觉反馈 */
+            transition: transform 0.05s ease;
+        }
+        
+        /* 触摸时的小球放大效果 */
+        .control-ball.touching {
+            transform: scale(1.1);
+            box-shadow: 0 0 25px rgba(204, 68, 68, 1.0), inset 0 0 15px rgba(255,255,255,0.3);
         }
     </style>
 </head>
@@ -454,7 +466,7 @@
         let flashInterval = null;
         let lastFrameTime = 0; // 帧率控制
         let is18SecondsTriggered = false; // 标记18秒巨量红弹是否已触发
-        let isTouchDevice = /Mobile|Android|iOS|iPad|iPhone|iPod|Windows Phone|BlackBerry/.test(navigator.userAgent); // 判断是否为移动设备
+        let isTouchDevice = /Mobile|Android|iOS|iPad|iPhone|iPod|Windows Phone|BlackBerry|Tablet/.test(navigator.userAgent); // 增强设备检测
         let isTouching = false; // 是否正在触摸屏幕（移动端专用）
 
         // ========== 分阶段评论库 ==========
@@ -484,8 +496,9 @@
         function resizeCanvas() {
             canvasWidth = window.innerWidth;
             canvasHeight = window.innerHeight;
-            canvas.width = canvasWidth;
-            canvas.height = canvasHeight;
+            canvas.width = canvasWidth * window.devicePixelRatio;
+            canvas.height = canvasHeight * window.devicePixelRatio;
+            ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
             
             // 若未触摸，保持光标在屏幕中央（移动端优化）
             if (!gameRunning || (isTouchDevice && !isTouching)) {
@@ -717,11 +730,12 @@
             body.style.boxShadow = 'inset 0 0 200px rgba(136, 34, 34, 0.9)';
         }
 
-        // ========== 移动端触摸事件处理 ==========
+        // ========== 移动端触摸事件处理（优化版） ==========
         // 触摸开始事件
         function handleTouchStart(e) {
             if (!gameRunning) return;
             isTouching = true;
+            controlBall.classList.add('touching'); // 添加触摸反馈
             // 获取第一个触摸点的坐标
             const touch = e.touches[0];
             mouseX = touch.clientX;
@@ -729,19 +743,24 @@
             updateControlBallPosition();
         }
 
-        // 触摸移动事件
+        // 触摸移动事件（优化性能）
         function handleTouchMove(e) {
             if (!gameRunning || !isTouching) return;
             e.preventDefault(); // 阻止页面滚动等默认行为
             const touch = e.touches[0];
-            mouseX = touch.clientX;
-            mouseY = touch.clientY;
-            updateControlBallPosition();
+            
+            // 优化：使用requestAnimationFrame减少重绘次数
+            requestAnimationFrame(() => {
+                mouseX = touch.clientX;
+                mouseY = touch.clientY;
+                updateControlBallPosition();
+            });
         }
 
         // 触摸结束事件
         function handleTouchEnd() {
             isTouching = false;
+            controlBall.classList.remove('touching'); // 移除触摸反馈
             // 移动端触摸结束后，小球仍保留在最后位置
             updateControlBallPosition();
         }
@@ -785,8 +804,20 @@
                 body.classList.remove('game-running'); // 移动端无需隐藏鼠标
                 controlBall.style.display = 'block'; // 显示移动端控制小球
                 updateControlBallPosition();
+                
+                // 绑定触摸事件到整个文档，确保全屏可触摸
+                document.addEventListener('touchstart', handleTouchStart, { passive: false });
+                document.addEventListener('touchmove', handleTouchMove, { passive: false });
+                document.addEventListener('touchend', handleTouchEnd);
+                document.addEventListener('touchcancel', handleTouchEnd); // 处理触摸取消事件
             } else {
                 body.classList.add('game-running'); // 电脑端隐藏鼠标
+                // 绑定鼠标移动事件
+                canvas.addEventListener('mousemove', (e) => {
+                    if (!gameRunning) return;
+                    mouseX = e.clientX;
+                    mouseY = e.clientY;
+                });
             }
             body.classList.remove('game-ended');
 
@@ -808,21 +839,8 @@
             // 初始化默认评论
             updateCommentCard('gray', '等待互动...');
 
-            // 绑定事件：区分设备绑定不同交互事件
+            // 绑定窗口大小变化事件
             window.addEventListener('resize', resizeCanvas);
-            if (!isTouchDevice) {
-                // 电脑端：鼠标移动事件
-                canvas.addEventListener('mousemove', (e) => {
-                    if (!gameRunning) return;
-                    mouseX = e.clientX;
-                    mouseY = e.clientY;
-                });
-            } else {
-                // 移动端：触摸事件绑定
-                canvas.addEventListener('touchstart', handleTouchStart);
-                canvas.addEventListener('touchmove', handleTouchMove);
-                canvas.addEventListener('touchend', handleTouchEnd);
-            }
 
             animate();
         }
@@ -868,6 +886,11 @@
                 // 游戏失败后：移动端隐藏控制小球，电脑端显示鼠标
                 if (isTouchDevice) {
                     controlBall.style.display = 'none';
+                    // 移除触摸事件监听
+                    document.removeEventListener('touchstart', handleTouchStart);
+                    document.removeEventListener('touchmove', handleTouchMove);
+                    document.removeEventListener('touchend', handleTouchEnd);
+                    document.removeEventListener('touchcancel', handleTouchEnd);
                 } else {
                     body.classList.remove('game-running');
                 }
@@ -1123,7 +1146,7 @@
             lastFrameTime = timestamp;
 
             // 清空画布
-            ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
 
             // 生成新言弹
             spawnBullets();
@@ -1165,8 +1188,13 @@
                     mouseY = e.clientY;
                 });
             }
+            
+            // 优化高清屏幕显示
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = canvasWidth * dpr;
+            canvas.height = canvasHeight * dpr;
+            ctx.scale(dpr, dpr);
         };
     </script>
 </body>
 </html>
-
